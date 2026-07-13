@@ -10,36 +10,81 @@ let nubeY;
 let radioNube = 60;
 
 // MECÁNICA DE TIEMPO
-let tiempoLimite = 80; // Segundos para apagar todos los incendios
+let tiempoLimite = 80; 
 let tiempoRestante;
 let frameInicial;
 
-// VARIABLES RECEPTORAS DEL CELULAR (OSC vía WebSocket)
-let celularManoX = 0;       
-let celularDistanciaDedo = 0; 
+// VARIABLES DE CONTROL (Compartidas)
 let manoAbierta = false;
-let últimoTouchTime = 0; // ariable declarada globalmente para evitar crash
-
-
 let manoAbiertaAnterior = false;
-
 let tiempoPantallaFinal = 0; 
+let últimoTouchTime = 0; 
 
-let ws
+// --- VARIABLES MEDIA PIPE (Cámara) ---
+let video;
+let hands;
 
+// --- VARIABLES WEBSOCKET (Comentadas por si acaso) ---
+// let ws; // [WS] Descomentar si volvés a WebSockets
+// let celularManoX = 0; // [WS] 
 
-function preload() {
-  // Comentado temporalmente
-}
+// --- CONTROLES DE TECLADO ---
+let velocidadNubeTeclado = 8; 
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
   
   nubeY = 80;
   frameInicial = frameCount;
-  conectarWS();
   
+  // ==========================================
+  // OPCIÓN A: MEDIA PIPE (Cámara activa por Wi-Fi/USB)
+  // ==========================================
+  video = createCapture(VIDEO);
+  video.size(640, 480);
+  video.hide(); 
+  
+  hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+  
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  
+  hands.onResults(onHandResults);
+  
+  const camera = new Camera(video.elt, {
+    onFrame: async () => {
+      await hands.send({ image: video.elt });
+    },
+    width: 640,
+    height: 480
+  });
+  camera.start();
 
+  // ==========================================
+  // OPCIÓN B: WEBSOCKET / OSC (Comentado)
+  // ==========================================
+  // conectarWS(); // [WS] Descomentar para reactivar OSC
+
+  // Inicializar árboles en fuego
+  for (let i = 0; i < cantidadArboles; i++) {
+    let x = random(50, width - 50);
+    let y = random(height * 0.4, height - 100); 
+    let nuevoArbol = new Arbol(x, y);
+    nuevoArbol.estado = "FUEGO";
+    arboles.push(nuevoArbol);
+  }
+}
+
+// ==========================================
+// FUNCIONES DE CONEXIÓN WEBSOCKET (Guardadas por si acaso)
+// ==========================================
+/* // [WS] Descomentar todo este bloque si volvés a OSC
 function conectarWS() {
   ws = new WebSocket("ws://localhost:3333");
 
@@ -62,33 +107,38 @@ function conectarWS() {
     ws.close();
   };
 }
+
+function oscReceived(address, value) {
+  if (address === "/oscControl/la_nube/x") {
+    celularManoX = value[0]; 
+    nubeX = map(celularManoX, 0, 1, 0, width);
+  }
   
-  // inicializar arboles en fuego
-  for (let i = 0; i < cantidadArboles; i++) {
-    let x = random(50, width - 50);
-    let y = random(height * 0.4, height - 100); 
-    let nuevoArbol = new Arbol(x, y);
-    nuevoArbol.estado = "FUEGO";
-    arboles.push(nuevoArbol);
+  if (address === "/oscControl/la_nube/agua") {
+    let estadoBoton = value[0]; 
+    últimoTouchTime = millis(); 
+    manoAbierta = (estadoBoton === 1);
   }
 }
+*/
 
 function draw() {
+  actualizarControlesTeclado();
 
+  // Margen de seguridad temporal por si usás OSC/Teclado
   if (manoAbierta && (millis() - últimoTouchTime > 200)) {
-    manoAbierta = false;
+    // Si usás MediaPipe estricto, podés comentar este bloque IF completo
+    // manoAbierta = false; 
   }
 
   if (escena === "JUEGO") {
     background(0); 
     
-    // Capturamos el conteo de incendios activos antes de actualizar
     let incendios = 0;
     for (let i = 0; i < arboles.length; i++) {
       if (arboles[i].estado === "FUEGO") incendios++;
     }
     
-    // CONTROL DE TRANSICIÓN A VICTORIA / DERROTA
     if (tiempoRestante <= 0) {
       escena = "DERROTA";
       tiempoPantallaFinal = millis(); 
@@ -108,13 +158,43 @@ function draw() {
     intentarReiniciar();
   }
 
-  // Guardamos el estado de la mano de este frame para poder detectar
-  // el flanco de apertura (cerrada -> abierta) en el próximo frame
   manoAbiertaAnterior = manoAbierta;
 }
 
-// Reinicia el juego cuando detecta que la mano ACABA de abrirse
-// (pasó de cerrada a abierta), en vez de depender de mensajes 0/1 crudos
+// --- CALLBACK RESULTADOS CÁMARA (MediaPipe) ---
+function onHandResults(results) {
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    let puntosMano = results.multiHandLandmarks[0];
+    
+    // Posición X basada en la muñeca (punto 0)
+    let xMuñeca = 1 - puntosMano[0].x; 
+    nubeX = lerp(nubeX, map(xMuñeca, 0.2, 0.8, radioNube, width - radioNube), 0.2); 
+    
+    // Distancia entre pulgar (4) e índice (8)
+    let pulgar = puntosMano[4];
+    let indice = puntosMano[8];
+    let d = dist(pulgar.x, pulgar.y, indice.x, indice.y);
+    
+    if (d > 0.08) {
+      manoAbierta = true;
+    } else {
+      manoAbierta = false;
+    }
+    últimoTouchTime = millis();
+  }
+}
+
+function actualizarControlesTeclado() {
+  if (keyIsDown(LEFT_ARROW))  nubeX -= velocidadNubeTeclado;
+  if (keyIsDown(RIGHT_ARROW)) nubeX += velocidadNubeTeclado;
+  nubeX = constrain(nubeX, radioNube, width - radioNube);
+
+  if (keyIsDown(DOWN_ARROW)) { 
+    manoAbierta = true;
+    últimoTouchTime = millis();
+  }
+}
+
 function intentarReiniciar() {
   let seAcabaDeAbrir = manoAbierta && !manoAbiertaAnterior;
   if (seAcabaDeAbrir && (millis() - tiempoPantallaFinal > 1500)) {
@@ -122,21 +202,17 @@ function intentarReiniciar() {
   }
 }
 
-
 function actualizarJuego() {
-  // 1. CONTROL DEL TIEMPO
   let segundosTranscurridos = floor((frameCount - frameInicial) / 60);
   tiempoRestante = tiempoLimite - segundosTranscurridos;
-  
 
-  // DISPARADOR DE AGUA
   if (manoAbierta) {
     if (frameCount % 3 === 0) {
       gotas.push(new Gota(nubeX + random(-radioNube/2, radioNube/2), nubeY + 20));
     }
   }
 
-  //DIBUJAR NUBE
+  // DIBUJAR NUBE
   push();
   noStroke();
   if (manoAbierta) {
@@ -147,7 +223,7 @@ function actualizarJuego() {
   ellipse(nubeX, nubeY, radioNube * 2, radioNube * 1.2);
   pop();
 
-  //ACTUALIZAR GOTAS Y ÁRBOLES
+  // ACTUALIZAR GOTAS Y ÁRBOLES
   for (let i = gotas.length - 1; i >= 0; i--) {
     gotas[i].actualizar();
     gotas[i].mostrar();
@@ -163,7 +239,6 @@ function actualizarJuego() {
     if (arboles[i].estado === "FUEGO") incendiosActivos++;
   }
 
-  // UI / DEBUG EN PANTALLA
   fill(255);
   textAlign(LEFT, TOP);
   textSize(24);
@@ -171,27 +246,8 @@ function actualizarJuego() {
   text("Fuegos activos: " + incendiosActivos, 30, 60);
 }
 
-//FUNCIÓN RECEPTORA DE OSC
-function oscReceived(address, value) {
-  if (address === "/oscControl/la_nube/x") {
-    celularManoX = value[0]; 
-    nubeX = map(celularManoX, 0, 1, 0, width);
-  }
-  
-  if (address === "/oscControl/la_nube/agua") {
-    let estadoBoton = value[0]; 
-    últimoTouchTime = millis(); 
-    
-    // Solo actualizamos el estado de la mano acá.
-    // La detección de "recién se abrió" para reiniciar el juego
-    // se hace en intentarReiniciar(), comparando con el frame anterior.
-    manoAbierta = (estadoBoton === 1);
-  }
-}
-
 function pantallaFinal(mensaje, colorFondo, colorTexto) {
   background(colorFondo); 
-  
   textAlign(CENTER, CENTER);
   fill(colorTexto);
   
@@ -201,14 +257,14 @@ function pantallaFinal(mensaje, colorFondo, colorTexto) {
   
   textStyle(NORMAL);
   textSize(22);
-  text("Presioná el botón de agua para volver a jugar", width / 2, height / 2 + 40);
+  text("Abrí la mano para volver a jugar", width / 2, height / 2 + 40);
 }
 
 function reiniciarJuego() {
   escena = "JUEGO";
   gotas = [];
   manoAbierta = false; 
-  manoAbiertaAnterior = false; // clave: evita que se detecte un "flanco" falso apenas arranca
+  manoAbiertaAnterior = false; 
   frameInicial = frameCount; 
   tiempoRestante = tiempoLimite; 
   
@@ -218,7 +274,7 @@ function reiniciarJuego() {
   }
 }
 
-//CLASES ARBOL Y GOTA
+// --- CLASES ÁRBOL Y GOTA ---
 class Arbol {
   constructor(x, y) {
     this.x = x;
@@ -232,7 +288,6 @@ class Arbol {
     translate(this.x, this.y); 
     rectMode(CENTER);
     noStroke();
-    
     if (this.estado === "FUEGO") {
       fill(255, 100, 0); 
       rect(0, -this.tam/2, this.tam * 0.6, this.tam);
