@@ -125,10 +125,11 @@ function oscReceived(address, value) {
 function draw() {
   actualizarControlesTeclado();
 
-  // Margen de seguridad temporal por si usás OSC/Teclado
-  if (manoAbierta && (millis() - últimoTouchTime > 200)) {
-    // Si usás MediaPipe estricto, podés comentar este bloque IF completo
-    // manoAbierta = false; 
+  // --- CONTROL INMEDIATO DE AUSENCIA DE MANO ---
+  // Si pasaron más de 100 ms desde la última vez que MediaPipe vio una mano,
+  // apagamos el agua y reseteamos el estado al instante.
+  if (millis() - últimoTouchTime > 100) {
+    manoAbierta = false;
   }
 
   if (escena === "JUEGO") {
@@ -180,7 +181,9 @@ function onHandResults(results) {
     } else {
       manoAbierta = false;
     }
-    últimoTouchTime = millis();
+    
+    // CLAVE: Avisa al juego en cada frame que la mano sigue estando visible
+    últimoTouchTime = millis(); 
   }
 }
 
@@ -196,8 +199,9 @@ function actualizarControlesTeclado() {
 }
 
 function intentarReiniciar() {
-  let seAcabaDeAbrir = manoAbierta && !manoAbiertaAnterior;
-  if (seAcabaDeAbrir && (millis() - tiempoPantallaFinal > 1500)) {
+  // CAMBIO: Ahora no importa el frame anterior. Si la mano está abierta 
+  // y ya pasaron 1.5 segundos desde que apareció la pantalla final, reinicia directo.
+  if (manoAbierta && (millis() - tiempoPantallaFinal > 1500)) {
     reiniciarJuego();
   }
 }
