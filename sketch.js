@@ -5,9 +5,9 @@ let gotas = [];
 let cantidadArboles = 20;
 
 // Control de la Nube
-let nubeX = 200; 
+let nubeX = 200;
 let nubeY;
-let radioNube = 60;
+let radioNube = 200;
 
 // MECÁNICA DE TIEMPO
 let tiempoLimite = 80; 
@@ -24,21 +24,44 @@ let últimoTouchTime = 0;
 let video;
 let hands;
 
-// --- VARIABLES WEBSOCKET (Comentadas por si acaso) ---
+// --- VARIABLES WEBSOCKET / OSC (Comentadas por si acaso) ---
 // let ws; // [WS] Descomentar si volvés a WebSockets
 // let celularManoX = 0; // [WS] 
+
+// --- VARIABLES PARA LAS IMÁGENES y ANIMACIÓN ---
+let imgNubeGris;
+let imgNubeAgua;
+let imgArbolApagado;
+let imgGota;
+let animacionFuego = []; 
+let cantidadFotogramas = 4; // Cambiá este número según tus frames de Photoshop (fuego0.png, fuego1.png...)
 
 // --- CONTROLES DE TECLADO ---
 let velocidadNubeTeclado = 8; 
 
+// ==========================================
+// CARGA DE MATERIAL GRÁFICO (NUEVO)
+// ==========================================
+function preload() {
+  imgNubeGris = loadImage('assets/nube_gris.png');
+  imgNubeAgua = loadImage('assets/nube_agua.png');
+  imgArbolApagado = loadImage('assets/arbol_apagado.png');
+  imgGota = loadImage('assets/gota.png');
+
+  // Cargamos la secuencia de fuegos dinámicamente desde Photoshop
+  for (let i = 0; i < cantidadFotogramas; i++) {
+    animacionFuego[i] = loadImage('assets/fuego' + i + '.png');
+  }
+}
+
 function setup() {
   createCanvas(windowWidth, windowHeight);
   
-  nubeY = 80;
+  nubeY = 200;
   frameInicial = frameCount;
   
   // ==========================================
-  // OPCIÓN A: MEDIA PIPE (Cámara activa por Wi-Fi/USB)
+  // OPCIÓN A: MEDIA PIPE (Activa por defecto)
   // ==========================================
   video = createCapture(VIDEO);
   video.size(640, 480);
@@ -74,7 +97,10 @@ function setup() {
   // Inicializar árboles en fuego
   for (let i = 0; i < cantidadArboles; i++) {
     let x = random(50, width - 50);
-    let y = random(height * 0.4, height - 100); 
+    
+    // Antes: let y = random(height * 0.4, height - 100); 
+    let y = random(height * 0.55, height - 120); // <-- Empiezan más abajo (del 55% de la pantalla hacia el piso)
+    
     let nuevoArbol = new Arbol(x, y);
     nuevoArbol.estado = "FUEGO";
     arboles.push(nuevoArbol);
@@ -125,9 +151,7 @@ function oscReceived(address, value) {
 function draw() {
   actualizarControlesTeclado();
 
-  // --- CONTROL INMEDIATO DE AUSENCIA DE MANO ---
-  // Si pasaron más de 100 ms desde la última vez que MediaPipe vio una mano,
-  // apagamos el agua y reseteamos el estado al instante.
+  // CONTROL INMEDIATO DE AUSENCIA DE MANO (Si sacás la mano, corta al instante)
   if (millis() - últimoTouchTime > 100) {
     manoAbierta = false;
   }
@@ -182,8 +206,7 @@ function onHandResults(results) {
       manoAbierta = false;
     }
     
-    // CLAVE: Avisa al juego en cada frame que la mano sigue estando visible
-    últimoTouchTime = millis(); 
+    últimoTouchTime = millis(); // Resetea el watchdog de presencia
   }
 }
 
@@ -199,8 +222,7 @@ function actualizarControlesTeclado() {
 }
 
 function intentarReiniciar() {
-  // CAMBIO: Ahora no importa el frame anterior. Si la mano está abierta 
-  // y ya pasaron 1.5 segundos desde que apareció la pantalla final, reinicia directo.
+  // Versión robusta para webcams: basta con mantener la mano abierta tras 1.5s
   if (manoAbierta && (millis() - tiempoPantallaFinal > 1500)) {
     reiniciarJuego();
   }
@@ -216,17 +238,33 @@ function actualizarJuego() {
     }
   }
 
+
   // DIBUJAR NUBE
+
   push();
-  noStroke();
+  imageMode(CENTER);
+  
+  // 1. Definimos el ancho objetivo que queremos (el doble del radio)
+  let anchoNubeObjetivo = radioNube * 2; 
+  
+  // 2. Elegimos la imagen a usar
+  let imagenActual;
   if (manoAbierta) {
-    fill(150, 200, 255); 
+    imagenActual = imgNubeAgua;
   } else {
-    fill(200); 
+    imagenActual = imgNubeGris;
   }
-  ellipse(nubeX, nubeY, radioNube * 2, radioNube * 1.2);
+  
+  // 3. Calculamos el alto PROPORCIONAL usando la regla de tres:
+  // (Ancho Objetivo * Alto Original) / Ancho Original
+  let altoNubeProporcional = (anchoNubeObjetivo * imagenActual.height) / imagenActual.width;
+  
+  // 4. Dibujamos la nube usando la escala corregida
+  image(imagenActual, nubeX, nubeY, anchoNubeObjetivo, altoNubeProporcional);
+  
   pop();
 
+  
   // ACTUALIZAR GOTAS Y ÁRBOLES
   for (let i = gotas.length - 1; i >= 0; i--) {
     gotas[i].actualizar();
@@ -261,7 +299,7 @@ function pantallaFinal(mensaje, colorFondo, colorTexto) {
   
   textStyle(NORMAL);
   textSize(22);
-  text("Abrí la mano para volver a jugar", width / 2, height / 2 + 40);
+  text("Mantené la mano abierta para volver a jugar", width / 2, height / 2 + 40);
 }
 
 function reiniciarJuego() {
@@ -278,31 +316,36 @@ function reiniciarJuego() {
   }
 }
 
-// --- CLASES ÁRBOL Y GOTA ---
+// ==========================================
+// CLASES ÁRBOL (CON STOP MOTION) Y GOTA
+// ==========================================
 class Arbol {
   constructor(x, y) {
     this.x = x;
     this.y = y;
-    this.tam = random(60, 100);
+    this.tam = random(90, 120);
     this.estado = "FUEGO";
     this.saludFuego = 100;
+    
+    // Desfase para que no todos los fuegos titilen de forma sincronizada
+    this.desfaseAnimacion = floor(random(100)); 
   }
+  
   mostrar() {
     push(); 
     translate(this.x, this.y); 
-    rectMode(CENTER);
-    noStroke();
+    imageMode(CENTER); 
+    
     if (this.estado === "FUEGO") {
-      fill(255, 100, 0); 
-      rect(0, -this.tam/2, this.tam * 0.6, this.tam);
-      fill(255, 200, 0); 
-      rect(0, -this.tam/2, this.tam * 0.3, this.tam * 0.7);
+      // Divide por 6 para controlar la velocidad del stop motion (cambia cada 6 frames)
+      let indiceFotograma = floor((frameCount + this.desfaseAnimacion) / 6) % cantidadFotogramas;
+      image(animacionFuego[indiceFotograma], 0, -this.tam/2, this.tam * 0.7, this.tam);
     } else {
-      fill(40, 40, 40); 
-      rect(0, -this.tam/2, this.tam * 0.4, this.tam);
+      image(imgArbolApagado, 0, -this.tam/2, this.tam * 0.7, this.tam);
     }
     pop();
   }
+  
   recibirAgua() {
     if (this.estado === "FUEGO") {
       this.saludFuego -= 8;
@@ -319,13 +362,14 @@ class Gota {
     this.tam = random(10, 18);
   }
   actualizar() { this.y += this.velY; }
+  
   mostrar() { 
     push();
-    noStroke();
-    fill(0, 150, 255); 
-    ellipse(this.x, this.y, this.tam, this.tam * 1.5); 
+    imageMode(CENTER);
+    image(imgGota, this.x, this.y, this.tam, this.tam * 1.5);
     pop();
   }
+  
   chequearColision(arbol) {
     if (arbol.estado === "FUEGO") {
       let d = dist(this.x, this.y, arbol.x, arbol.y - arbol.tam/2);
