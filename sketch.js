@@ -7,7 +7,7 @@ let cantidadArboles = 20;
 // Control de la Nube
 let nubeX = 200;
 let nubeY;
-let radioNube = 200;
+let radioNube;
 
 // MECÁNICA DE TIEMPO
 let tiempoLimite = 80; 
@@ -34,13 +34,13 @@ let imgNubeAgua;
 let imgArbolApagado;
 let imgGota;
 let animacionFuego = []; 
-let cantidadFotogramas = 4; // Cambiá este número según tus frames de Photoshop (fuego0.png, fuego1.png...)
+let cantidadFotogramas = 4; // Cantidad de frames de fuego
 
 // --- CONTROLES DE TECLADO ---
 let velocidadNubeTeclado = 8; 
 
 // ==========================================
-// CARGA DE MATERIAL GRÁFICO (NUEVO)
+// CARGA DE MATERIAL GRÁFICO
 // ==========================================
 function preload() {
   imgNubeGris = loadImage('assets/nube_gris.png');
@@ -48,7 +48,7 @@ function preload() {
   imgArbolApagado = loadImage('assets/arbol_apagado.png');
   imgGota = loadImage('assets/gota.png');
 
-  // Cargamos la secuencia de fuegos dinámicamente desde Photoshop
+  // Cargamos la secuencia de fuegos
   for (let i = 0; i < cantidadFotogramas; i++) {
     animacionFuego[i] = loadImage('assets/fuego' + i + '.png');
   }
@@ -57,15 +57,25 @@ function preload() {
 function setup() {
   createCanvas(windowWidth, windowHeight);
   
-  nubeY = 200;
+  // Escala responsiva de la nube (calibrada para que no sea gigante)
+  radioNube = 200; 
+  
+  
+  nubeY = height * 0.20; // Más arriba para dar aire de juego
   frameInicial = frameCount;
   
   // ==========================================
   // OPCIÓN A: MEDIA PIPE (Activa por defecto)
   // ==========================================
-  video = createCapture(VIDEO);
-  video.size(640, 480);
-  video.hide(); 
+  video = createCapture({
+    audio: false,
+    video: {
+      facingMode: "user", // Fuerza la cámara frontal
+      width: 640,
+      height: 480
+    }
+  });
+  video.hide();
   
   hands = new Hands({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
@@ -92,14 +102,21 @@ function setup() {
   // ==========================================
   // OPCIÓN B: WEBSOCKET / OSC (Comentado)
   // ==========================================
-  // conectarWS(); // [WS] Descomentar para reactivar OSC
+  // conectarWS(); 
 
-  // Inicializar árboles en fuego
+  // NUEVO: Inicializamos los árboles usando la nueva función
+  crearArboles();
+}
+
+// ==========================================
+// NUEVA FUNCIÓN: CREAR ÁRBOLES
+// ==========================================
+function crearArboles() {
+  arboles = [];
   for (let i = 0; i < cantidadArboles; i++) {
-    let x = random(50, width - 50);
-    
-    // Antes: let y = random(height * 0.4, height - 100); 
-    let y = random(height * 0.55, height - 120); // <-- Empiezan más abajo (del 55% de la pantalla hacia el piso)
+    let x = random(40, width - 40);
+    // Aparecen bien abajo (del 68% de la pantalla hacia el piso) para no encimarse con la nube
+    let y = random(height * 0.68, height - 100); 
     
     let nuevoArbol = new Arbol(x, y);
     nuevoArbol.estado = "FUEGO";
@@ -108,7 +125,7 @@ function setup() {
 }
 
 // ==========================================
-// FUNCIONES DE CONEXIÓN WEBSOCKET (Guardadas por si acaso)
+// FUNCIONES DE CONEXIÓN WEBSOCKET (Guardadas)
 // ==========================================
 /* // [WS] Descomentar todo este bloque si volvés a OSC
 function conectarWS() {
@@ -151,7 +168,7 @@ function oscReceived(address, value) {
 function draw() {
   actualizarControlesTeclado();
 
-  // CONTROL INMEDIATO DE AUSENCIA DE MANO (Si sacás la mano, corta al instante)
+  // CONTROL INMEDIATO DE AUSENCIA DE MANO (Watchdog)
   if (millis() - últimoTouchTime > 100) {
     manoAbierta = false;
   }
@@ -191,11 +208,9 @@ function onHandResults(results) {
   if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
     let puntosMano = results.multiHandLandmarks[0];
     
-    // Posición X basada en la muñeca (punto 0)
     let xMuñeca = 1 - puntosMano[0].x; 
     nubeX = lerp(nubeX, map(xMuñeca, 0.2, 0.8, radioNube, width - radioNube), 0.2); 
     
-    // Distancia entre pulgar (4) e índice (8)
     let pulgar = puntosMano[4];
     let indice = puntosMano[8];
     let d = dist(pulgar.x, pulgar.y, indice.x, indice.y);
@@ -206,7 +221,7 @@ function onHandResults(results) {
       manoAbierta = false;
     }
     
-    últimoTouchTime = millis(); // Resetea el watchdog de presencia
+    últimoTouchTime = millis(); 
   }
 }
 
@@ -222,7 +237,6 @@ function actualizarControlesTeclado() {
 }
 
 function intentarReiniciar() {
-  // Versión robusta para webcams: basta con mantener la mano abierta tras 1.5s
   if (manoAbierta && (millis() - tiempoPantallaFinal > 1500)) {
     reiniciarJuego();
   }
@@ -238,33 +252,19 @@ function actualizarJuego() {
     }
   }
 
-
-  // DIBUJAR NUBE
-
+  // DIBUJAR NUBE (Proporcional)
   push();
   imageMode(CENTER);
-  
-  // 1. Definimos el ancho objetivo que queremos (el doble del radio)
   let anchoNubeObjetivo = radioNube * 2; 
-  
-  // 2. Elegimos la imagen a usar
-  let imagenActual;
-  if (manoAbierta) {
-    imagenActual = imgNubeAgua;
-  } else {
-    imagenActual = imgNubeGris;
-  }
-  
-  // 3. Calculamos el alto PROPORCIONAL usando la regla de tres:
-  // (Ancho Objetivo * Alto Original) / Ancho Original
+
+  let imagenActual = manoAbierta ? imgNubeAgua : imgNubeGris;
+
   let altoNubeProporcional = (anchoNubeObjetivo * imagenActual.height) / imagenActual.width;
-  
-  // 4. Dibujamos la nube usando la escala corregida
+
+
   image(imagenActual, nubeX, nubeY, anchoNubeObjetivo, altoNubeProporcional);
-  
   pop();
 
-  
   // ACTUALIZAR GOTAS Y ÁRBOLES
   for (let i = gotas.length - 1; i >= 0; i--) {
     gotas[i].actualizar();
@@ -275,6 +275,12 @@ function actualizarJuego() {
     if (gotas[i].fueraDePantalla()) gotas.splice(i, 1);
   }
 
+  // ==========================================
+  // DIBUJAR ÁRBOLES (Ordenados de atrás hacia adelante)
+  // ==========================================
+  // Ordenamos la lista: el que tiene menor 'y' (más al fondo) va primero
+  arboles.sort((a, b) => a.y - b.y);
+
   let incendiosActivos = 0;
   for (let i = 0; i < arboles.length; i++) {
     arboles[i].mostrar();
@@ -283,7 +289,7 @@ function actualizarJuego() {
 
   fill(255);
   textAlign(LEFT, TOP);
-  textSize(24);
+  textSize(width > 600 ? 24 : 16); // Tipografía adaptiva
   text("Tiempo: " + max(0, tiempoRestante) + "s", 30, 30);
   text("Fuegos activos: " + incendiosActivos, 30, 60);
 }
@@ -293,12 +299,12 @@ function pantallaFinal(mensaje, colorFondo, colorTexto) {
   textAlign(CENTER, CENTER);
   fill(colorTexto);
   
-  textSize(48);
+  textSize(width > 600 ? 48 : 28);
   textStyle(BOLD);
   text(mensaje, width / 2, height / 2 - 40);
   
   textStyle(NORMAL);
-  textSize(22);
+  textSize(width > 600 ? 22 : 14);
   text("Mantené la mano abierta para volver a jugar", width / 2, height / 2 + 40);
 }
 
@@ -310,24 +316,26 @@ function reiniciarJuego() {
   frameInicial = frameCount; 
   tiempoRestante = tiempoLimite; 
   
-  for (let i = 0; i < arboles.length; i++) {
-    arboles[i].estado = "FUEGO";
-    arboles[i].saludFuego = 100;
-  }
+  // MODIFICADO: Ahora vuelve a generar posiciones aleatorias al reiniciar
+  crearArboles();
 }
 
 // ==========================================
-// CLASES ÁRBOL (CON STOP MOTION) Y GOTA
+// CLASES ÁRBOL (CON STOP MOTION RESPONSIVO) Y GOTA
 // ==========================================
 class Arbol {
   constructor(x, y) {
     this.x = x;
     this.y = y;
-    this.tam = random(90, 120);
+    
+    // El tamaño del árbol se calcula según el ancho de la pantalla (moderado)
+    this.tam = random(130, 170);
+    
+    // Límites para evitar deformaciones en Desktop o pantallas muy chicas
+    
+
     this.estado = "FUEGO";
     this.saludFuego = 100;
-    
-    // Desfase para que no todos los fuegos titilen de forma sincronizada
     this.desfaseAnimacion = floor(random(100)); 
   }
   
@@ -337,7 +345,6 @@ class Arbol {
     imageMode(CENTER); 
     
     if (this.estado === "FUEGO") {
-      // Divide por 6 para controlar la velocidad del stop motion (cambia cada 6 frames)
       let indiceFotograma = floor((frameCount + this.desfaseAnimacion) / 6) % cantidadFotogramas;
       image(animacionFuego[indiceFotograma], 0, -this.tam/2, this.tam * 0.7, this.tam);
     } else {
@@ -380,4 +387,13 @@ class Gota {
     }
   }
   fueraDePantalla() { return this.y > height; }
+}
+
+// Si girás el celular o cambia el tamaño de la pantalla
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  
+  radioNube = 200;
+   
+  nubeY = height * 0.20; 
 }
