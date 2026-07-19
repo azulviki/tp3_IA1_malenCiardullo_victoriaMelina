@@ -5,20 +5,21 @@ let gotas = [];
 let cantidadArboles = 20;
 
 // Control de la Nube
-let nubeX = 200;
+let nubeX;
 let nubeY;
 let radioNube;
 
 // MECÁNICA DE TIEMPO
-let tiempoLimite = 80; 
+let tiempoLimite = 80;
 let tiempoRestante;
 let frameInicial;
+let framesPausados = 0; // frames "congelados" mientras el celular está en vertical
 
 // VARIABLES DE CONTROL (Compartidas)
 let manoAbierta = false;
 let manoAbiertaAnterior = false;
-let tiempoPantallaFinal = 0; 
-let últimoTouchTime = 0; 
+let tiempoPantallaFinal = 0;
+let últimoTouchTime = 0;
 
 // --- VARIABLES MEDIA PIPE (Cámara) ---
 let video;
@@ -28,16 +29,30 @@ let hands;
 // let ws; // [WS] Descomentar si volvés a WebSockets
 // let celularManoX = 0; // [WS] 
 
+// ==========================================
+// LIENZO LÓGICO FIJO 16:9 (responsive)
+// ==========================================
+// El juego siempre se dibuja como si la pantalla midiera LW x LH.
+// Ese "cuadro" se escala y centra dentro de la ventana real, con
+// barras negras si el dispositivo no es exactamente 16:9.
+const LW = 960;
+const LH = 540;
+let escalaJuego = 1;
+let offsetX = 0;
+let offsetY = 0;
+let enLandscape = true;
+let estabaPausadoPorRotacion = false;
+
 // --- VARIABLES PARA LAS IMÁGENES y ANIMACIÓN ---
 let imgNubeGris;
 let imgNubeAgua;
 let imgArbolApagado;
 let imgGota;
-let animacionFuego = []; 
+let animacionFuego = [];
 let cantidadFotogramas = 4; // Cantidad de frames de fuego
 
 // --- CONTROLES DE TECLADO ---
-let velocidadNubeTeclado = 8; 
+let velocidadNubeTeclado = 8;
 
 // ==========================================
 // CARGA DE MATERIAL GRÁFICO
@@ -48,7 +63,6 @@ function preload() {
   imgArbolApagado = loadImage('assets/arbol_apagado.png');
   imgGota = loadImage('assets/gota.png');
 
-  // Cargamos la secuencia de fuegos
   for (let i = 0; i < cantidadFotogramas; i++) {
     animacionFuego[i] = loadImage('assets/fuego' + i + '.png');
   }
@@ -56,40 +70,41 @@ function preload() {
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
-  
-  // Escala responsiva de la nube (calibrada para que no sea gigante)
-  radioNube = 200; 
-  
-  
-  nubeY = height * 0.20; // Más arriba para dar aire de juego
+
+  // Nube en coordenadas LÓGICAS (960x540), no en pixeles reales de pantalla
+  radioNube = 120; // cubre bien el ancho, dejando un margen chico para moverse
+  nubeX = LW / 2;
+  nubeY = LH * 0.26; // un poco más abajo, para dejarle más aire arriba
   frameInicial = frameCount;
-  
+
+  calcularEscala();
+
   // ==========================================
-  // OPCIÓN A: MEDIA PIPE (Activa por defecto)
+  // MEDIA PIPE (cámara) — igual que la versión original
   // ==========================================
   video = createCapture({
     audio: false,
     video: {
-      facingMode: "user", // Fuerza la cámara frontal
+      facingMode: "user",
       width: 640,
       height: 480
     }
   });
   video.hide();
-  
+
   hands = new Hands({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
   });
-  
+
   hands.setOptions({
     maxNumHands: 1,
     modelComplexity: 1,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
   });
-  
+
   hands.onResults(onHandResults);
-  
+
   const camera = new Camera(video.elt, {
     onFrame: async () => {
       await hands.send({ image: video.elt });
@@ -104,20 +119,32 @@ function setup() {
   // ==========================================
   // conectarWS(); 
 
-  // NUEVO: Inicializamos los árboles usando la nueva función
   crearArboles();
 }
 
 // ==========================================
-// NUEVA FUNCIÓN: CREAR ÁRBOLES
+// CÁLCULO DE ESCALA / LETTERBOX 16:9
+// ==========================================
+function calcularEscala() {
+  enLandscape = windowWidth >= windowHeight;
+  escalaJuego = min(windowWidth / LW, windowHeight / LH);
+  offsetX = (windowWidth - LW * escalaJuego) / 2;
+  offsetY = (windowHeight - LH * escalaJuego) / 2;
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  calcularEscala();
+}
+
+// ==========================================
+// CREAR ÁRBOLES (en coordenadas lógicas)
 // ==========================================
 function crearArboles() {
   arboles = [];
   for (let i = 0; i < cantidadArboles; i++) {
-    let x = random(40, width - 40);
-    // Aparecen bien abajo (del 68% de la pantalla hacia el piso) para no encimarse con la nube
-    let y = random(height * 0.68, height - 100); 
-    
+    let x = random(40, LW - 40);
+    let y = random(LH * 0.68, LH - 60);
     let nuevoArbol = new Arbol(x, y);
     nuevoArbol.estado = "FUEGO";
     arboles.push(nuevoArbol);
@@ -166,71 +193,103 @@ function oscReceived(address, value) {
 */
 
 function draw() {
-  actualizarControlesTeclado();
+  background(0); // barras negras del letterbox
 
-  // CONTROL INMEDIATO DE AUSENCIA DE MANO (Watchdog)
+  // CONTROL INMEDIATO DE AUSENCIA DE MANO (Watchdog) — corre siempre,
+  // aunque esté en vertical, para que no quede "pegado" al volver.
   if (millis() - últimoTouchTime > 100) {
     manoAbierta = false;
   }
 
+  // Si el celular está en vertical: pausar y pedir que lo giren
+  if (!enLandscape) {
+    if (!estabaPausadoPorRotacion) estabaPausadoPorRotacion = true;
+    framesPausados++;
+    dibujarCartelRotar();
+    manoAbiertaAnterior = manoAbierta;
+    return;
+  } else if (estabaPausadoPorRotacion) {
+    estabaPausadoPorRotacion = false;
+  }
+
+  actualizarControlesTeclado();
+
+  // A partir de acá, todo se dibuja en el lienzo lógico 960x540,
+  // escalado y centrado dentro de la ventana real.
+  push();
+  translate(offsetX, offsetY);
+  scale(escalaJuego);
+
   if (escena === "JUEGO") {
-    background(0); 
-    
     let incendios = 0;
     for (let i = 0; i < arboles.length; i++) {
       if (arboles[i].estado === "FUEGO") incendios++;
     }
-    
+
     if (tiempoRestante <= 0) {
       escena = "DERROTA";
-      tiempoPantallaFinal = millis(); 
+      tiempoPantallaFinal = millis();
     } else if (incendios === 0) {
       escena = "VICTORIA";
-      tiempoPantallaFinal = millis(); 
+      tiempoPantallaFinal = millis();
     }
-    
+
     actualizarJuego();
-  } 
+  }
   else if (escena === "VICTORIA") {
-    pantallaFinal("¡BOSQUE A SALVO!", color(0, 255, 100), color(0)); 
+    pantallaFinal("¡BOSQUE A SALVO!", color(0, 255, 100), color(0));
     intentarReiniciar();
-  } 
+  }
   else if (escena === "DERROTA") {
-    pantallaFinal("EL FUEGO CONSUMIÓ EL BOSQUE", color(255, 50, 50), color(255)); 
+    pantallaFinal("EL FUEGO CONSUMIÓ EL BOSQUE", color(255, 50, 50), color(255));
     intentarReiniciar();
   }
 
+  pop();
+
   manoAbiertaAnterior = manoAbierta;
+}
+
+function dibujarCartelRotar() {
+  push();
+  translate(width / 2, height / 2);
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(width > 600 ? 26 : 18);
+  text("📱 Girá el celular", 0, -10);
+  textSize(width > 600 ? 16 : 12);
+  text("Usalo en horizontal para jugar", 0, 20);
+  pop();
 }
 
 // --- CALLBACK RESULTADOS CÁMARA (MediaPipe) ---
 function onHandResults(results) {
   if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
     let puntosMano = results.multiHandLandmarks[0];
-    
-    let xMuñeca = 1 - puntosMano[0].x; 
-    nubeX = lerp(nubeX, map(xMuñeca, 0.2, 0.8, radioNube, width - radioNube), 0.2); 
-    
+
+    let xMuñeca = 1 - puntosMano[0].x;
+    nubeX = lerp(nubeX, map(xMuñeca, 0.2, 0.8, radioNube, LW - radioNube), 0.2);
+
     let pulgar = puntosMano[4];
     let indice = puntosMano[8];
     let d = dist(pulgar.x, pulgar.y, indice.x, indice.y);
-    
+
     if (d > 0.08) {
       manoAbierta = true;
     } else {
       manoAbierta = false;
     }
-    
-    últimoTouchTime = millis(); 
+
+    últimoTouchTime = millis();
   }
 }
 
 function actualizarControlesTeclado() {
   if (keyIsDown(LEFT_ARROW))  nubeX -= velocidadNubeTeclado;
   if (keyIsDown(RIGHT_ARROW)) nubeX += velocidadNubeTeclado;
-  nubeX = constrain(nubeX, radioNube, width - radioNube);
+  nubeX = constrain(nubeX, radioNube, LW - radioNube);
 
-  if (keyIsDown(DOWN_ARROW)) { 
+  if (keyIsDown(DOWN_ARROW)) {
     manoAbierta = true;
     últimoTouchTime = millis();
   }
@@ -243,24 +302,23 @@ function intentarReiniciar() {
 }
 
 function actualizarJuego() {
-  let segundosTranscurridos = floor((frameCount - frameInicial) / 60);
+  let segundosTranscurridos = floor((frameCount - frameInicial - framesPausados) / 60);
   tiempoRestante = tiempoLimite - segundosTranscurridos;
 
   if (manoAbierta) {
     if (frameCount % 3 === 0) {
-      gotas.push(new Gota(nubeX + random(-radioNube/2, radioNube/2), nubeY + 20));
+      gotas.push(new Gota(nubeX + random(-radioNube / 2, radioNube / 2), nubeY + 20));
     }
   }
 
   // DIBUJAR NUBE (Proporcional)
   push();
   imageMode(CENTER);
-  let anchoNubeObjetivo = radioNube * 2; 
+  let anchoNubeObjetivo = radioNube * 2;
 
   let imagenActual = manoAbierta ? imgNubeAgua : imgNubeGris;
 
   let altoNubeProporcional = (anchoNubeObjetivo * imagenActual.height) / imagenActual.width;
-
 
   image(imagenActual, nubeX, nubeY, anchoNubeObjetivo, altoNubeProporcional);
   pop();
@@ -275,10 +333,7 @@ function actualizarJuego() {
     if (gotas[i].fueraDePantalla()) gotas.splice(i, 1);
   }
 
-  // ==========================================
   // DIBUJAR ÁRBOLES (Ordenados de atrás hacia adelante)
-  // ==========================================
-  // Ordenamos la lista: el que tiene menor 'y' (más al fondo) va primero
   arboles.sort((a, b) => a.y - b.y);
 
   let incendiosActivos = 0;
@@ -289,34 +344,34 @@ function actualizarJuego() {
 
   fill(255);
   textAlign(LEFT, TOP);
-  textSize(width > 600 ? 24 : 16); // Tipografía adaptiva
-  text("Tiempo: " + max(0, tiempoRestante) + "s", 30, 30);
-  text("Fuegos activos: " + incendiosActivos, 30, 60);
+  textSize(16);
+  text("Tiempo: " + max(0, tiempoRestante) + "s", 20, 16);
+  text("Fuegos activos: " + incendiosActivos, 20, 38);
 }
 
 function pantallaFinal(mensaje, colorFondo, colorTexto) {
-  background(colorFondo); 
+  background(colorFondo);
   textAlign(CENTER, CENTER);
   fill(colorTexto);
-  
-  textSize(width > 600 ? 48 : 28);
+
+  textSize(48);
   textStyle(BOLD);
-  text(mensaje, width / 2, height / 2 - 40);
-  
+  text(mensaje, LW / 2, LH / 2 - 40);
+
   textStyle(NORMAL);
-  textSize(width > 600 ? 22 : 14);
-  text("Mantené la mano abierta para volver a jugar", width / 2, height / 2 + 40);
+  textSize(22);
+  text("Mantené la mano abierta para volver a jugar", LW / 2, LH / 2 + 40);
 }
 
 function reiniciarJuego() {
   escena = "JUEGO";
   gotas = [];
-  manoAbierta = false; 
-  manoAbiertaAnterior = false; 
-  frameInicial = frameCount; 
-  tiempoRestante = tiempoLimite; 
-  
-  // MODIFICADO: Ahora vuelve a generar posiciones aleatorias al reiniciar
+  manoAbierta = false;
+  manoAbiertaAnterior = false;
+  frameInicial = frameCount;
+  framesPausados = 0;
+  tiempoRestante = tiempoLimite;
+
   crearArboles();
 }
 
@@ -327,32 +382,26 @@ class Arbol {
   constructor(x, y) {
     this.x = x;
     this.y = y;
-    
-    // El tamaño del árbol se calcula según el ancho de la pantalla (moderado)
-    this.tam = random(130, 170);
-    
-    // Límites para evitar deformaciones en Desktop o pantallas muy chicas
-    
-
+    this.tam = random(75, 90);
     this.estado = "FUEGO";
     this.saludFuego = 100;
-    this.desfaseAnimacion = floor(random(100)); 
+    this.desfaseAnimacion = floor(random(100));
   }
-  
+
   mostrar() {
-    push(); 
-    translate(this.x, this.y); 
-    imageMode(CENTER); 
-    
+    push();
+    translate(this.x, this.y);
+    imageMode(CENTER);
+
     if (this.estado === "FUEGO") {
       let indiceFotograma = floor((frameCount + this.desfaseAnimacion) / 6) % cantidadFotogramas;
-      image(animacionFuego[indiceFotograma], 0, -this.tam/2, this.tam * 0.7, this.tam);
+      image(animacionFuego[indiceFotograma], 0, -this.tam / 2, this.tam * 0.7, this.tam);
     } else {
-      image(imgArbolApagado, 0, -this.tam/2, this.tam * 0.7, this.tam);
+      image(imgArbolApagado, 0, -this.tam / 2, this.tam * 0.7, this.tam);
     }
     pop();
   }
-  
+
   recibirAgua() {
     if (this.estado === "FUEGO") {
       this.saludFuego -= 8;
@@ -363,37 +412,28 @@ class Arbol {
 
 class Gota {
   constructor(x, y) {
-    this.x = x; 
-    this.y = y; 
-    this.velY = random(7, 11); 
-    this.tam = random(10, 18);
+    this.x = x;
+    this.y = y;
+    this.velY = random(7, 11);
+    this.tam = random(8, 14);
   }
   actualizar() { this.y += this.velY; }
-  
-  mostrar() { 
+
+  mostrar() {
     push();
     imageMode(CENTER);
     image(imgGota, this.x, this.y, this.tam, this.tam * 1.5);
     pop();
   }
-  
+
   chequearColision(arbol) {
     if (arbol.estado === "FUEGO") {
-      let d = dist(this.x, this.y, arbol.x, arbol.y - arbol.tam/2);
-      if (d < arbol.tam / 2) { 
-        arbol.recibirAgua(); 
-        this.y = height + 100; 
+      let d = dist(this.x, this.y, arbol.x, arbol.y - arbol.tam / 2);
+      if (d < arbol.tam / 2) {
+        arbol.recibirAgua();
+        this.y = LH + 100;
       }
     }
   }
-  fueraDePantalla() { return this.y > height; }
-}
-
-// Si girás el celular o cambia el tamaño de la pantalla
-function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-  
-  radioNube = 200;
-   
-  nubeY = height * 0.20; 
+  fueraDePantalla() { return this.y > LH; }
 }
